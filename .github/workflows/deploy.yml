@@ -1,0 +1,59 @@
+name: Deploy Pragmaz Votos
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generar config.js a partir de los Secrets del repo
+        run: |
+          cat > config.js <<EOF
+          window.PRAGMAZ_CONFIG = {
+            SUPABASE_URL: '${{ secrets.SUPABASE_URL }}',
+            SUPABASE_ANON_KEY: '${{ secrets.SUPABASE_ANON_KEY }}',
+            VOTER_EMAIL: '${{ secrets.VOTER_EMAIL }}',
+            VOTER_PASSWORD: '${{ secrets.VOTER_PASSWORD }}',
+          };
+          EOF
+
+      - name: Verificar que los Secrets no estén vacíos
+        run: |
+          if [ -z "${{ secrets.SUPABASE_URL }}" ] || [ -z "${{ secrets.SUPABASE_ANON_KEY }}" ] || [ -z "${{ secrets.VOTER_EMAIL }}" ] || [ -z "${{ secrets.VOTER_PASSWORD }}" ]; then
+            echo "::error::Falta configurar uno o más Secrets del repositorio (Settings -> Secrets and variables -> Actions). Ver README.md, paso 4."
+            exit 1
+          fi
+
+      - name: Configurar Pages
+        uses: actions/configure-pages@v5
+
+      - name: Empaquetar sitio
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '.'
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Publicar en GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,8 +1,7 @@
 // ============================================================================
 // Pragmaz Votos — capa de datos sobre Supabase.
 //
-// Reemplaza la capacidad "db" de Claude (claude.use('db')) que usaban los
-// artifacts originales. Expone la misma forma: .collection(x).onSnapshot(cb),
+// Expone la misma forma: .collection(x).onSnapshot(cb),
 // .doc(x).onSnapshot(cb), .doc(x).set(data) — para que el resto del código de
 // cada página (nicaragua-sugar-estates.html, compania-licorera.html,
 // banco-avanz.html) casi no tuviera que cambiar.
@@ -64,12 +63,20 @@
           return () => { stopped = true; client.removeChannel(channel); };
         },
         set(data) {
-          return client
-            .from(TABLE)
-            .upsert(
-              { board, collection, id, payload: data, updated_at: new Date().toISOString() },
-              { onConflict: 'board,collection,id' }
-            );
+          // .upsert() devuelve un objeto "thenable" (tiene .then) pero no una
+          // Promise real, así que no trae .catch()/.finally(). Envolverlo en
+          // Promise.resolve() lo convierte en una Promise normal.
+          return Promise.resolve(
+            client
+              .from(TABLE)
+              .upsert(
+                { board, collection, id, payload: data, updated_at: new Date().toISOString() },
+                { onConflict: 'board,collection,id' }
+              )
+          ).then((res) => {
+            if (res && res.error) throw res.error;
+            return res;
+          });
         },
       };
     }

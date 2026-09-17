@@ -663,179 +663,69 @@ function nivelNum(v){
 }
 function nivelLabel(n){ return n === 3 ? 'Alto' : (n === 2 ? 'Medio' : (n === 1 ? 'Bajo' : 'Sin dato')); }
 
-function colorAzulPct(pct){
-  const p = Math.max(0, Math.min(100, pct)) / 100;
-  const c1 = [220,232,245], c2 = [5,34,99];
-  const r = Math.round(c1[0] + (c2[0]-c1[0])*p);
-  const g = Math.round(c1[1] + (c2[1]-c1[1])*p);
-  const b = Math.round(c1[2] + (c2[2]-c1[2])*p);
-  return 'rgb(' + r + ',' + g + ',' + b + ')';
+// Color por % de aprobacion: 5 tramos discretos de un mismo tono azul, en vez
+// del degradado continuo anterior. Tramos (no degradado) para que dos barras o
+// dos burbujas se distingan a simple vista. La misma escala se usa en las
+// barras del ranking y en las burbujas de los mapas, para que un mismo % se
+// vea del mismo color en las dos secciones.
+//   0-19  #94B5D9 | 20-39 #6693C4 | 40-59 #3E6DA6 | 60-79 #1E4C85 | 80-100 #052263
+var ESCALA_APROBACION = ["#94B5D9", "#6693C4", "#3E6DA6", "#1E4C85", "#052263"];
+function colorAprobacion(pct){
+  var p = Math.max(0, Math.min(100, Number(pct) || 0));
+  var i = Math.min(4, Math.floor(p / 20));
+  return ESCALA_APROBACION[i];
 }
 
-function elegirGanador(candidatos, scoreFn, usados){
-  const disponibles = candidatos.filter(it => !usados.has(it.id));
-  const pool = disponibles.length ? disponibles : candidatos;
-  if (!pool.length) return null;
-  let mejor = pool[0], mejorScore = scoreFn(pool[0]);
-  pool.forEach(it => { const s = scoreFn(it); if (s > mejorScore) { mejor = it; mejorScore = s; } });
-  usados.add(mejor.id);
-  return mejor;
-}
-
+// El ranking se lee nombre a la izquierda y barra anclada al borde derecho,
+// creciendo hacia la izquierda dentro de su propia zona (rk-track). El % va
+// como tag pegado a la punta izquierda de la barra, o sea que se mueve con
+// ella. El ancho de la barra se calcula sobre (ancho de la zona - 52px), que
+// es el espacio que reserva el tag, para que al 100% nunca invada el nombre.
 function filaRanking(it){
+  const frac = (it._pct / 100).toFixed(4);
   return '' +
-    '<div class="rk-row" data-pct="' + it._pct + '">' +
-      '<div class="rk-bar-wrap"><div class="rk-bar" style="width:' + it._pct + '%;background:' + colorAzulPct(it._pct) + '"></div></div>' +
-      '<div class="rk-label"><span class="rk-nombre">' + escapeHtml(it.nombre || '') + '</span><span class="rk-pct">' + it._pct + '%</span></div>' +
+    '<div class="rk-row" data-pct="' + it._pct + '" data-id="' + escapeHtml(it.id) + '">' +
+      '<input class="rk-check" type="checkbox" onchange="alternarSeleccion(this)" aria-label="Seleccionar ' + escapeHtml(it.nombre || it.id) + '">' +
+      '<div class="rk-nombre"><span class="rk-id">' + escapeHtml(it.id) + '</span>' + escapeHtml(it.nombre || '') + '</div>' +
+      '<div class="rk-pond">' + (it._ponderacion != null ? it._ponderacion.toFixed(1) : '—') + '</div>' +
+      '<div class="rk-track">' +
+        '<div class="rk-rail"></div>' +
+        '<div class="rk-pct">' + it._pct + '%</div>' +
+        '<div class="rk-bar" style="width:calc((100% - 52px) * ' + frac + ');background:' + colorAprobacion(it._pct) + '"></div>' +
+      '</div>' +
     '</div>';
 }
 
-function normNivel(v){ const n = nivelNum(v); return n == null ? 0 : (n - 1) / 2; }
-
-// La ponderación ya no viene precalculada de Supabase: se arma en el
-// cliente sumando los 4 criterios reales de la hoja de priorización
-// (complejidad, urgencia, impacto, capacidad). Si una iniciativa no tiene
-// ninguno de los 4 cargados, no participa en los mapas de burbujas.
-const CRITERIOS_PONDERACION = ['complejidad', 'urgencia', 'impacto', 'capacidad'];
+// Ponderación (vigente desde 2026-09-16, ver sección 6.1 de
+// PROYECTO-CONTEXTO.md): fórmula ponderada de solo 3 criterios, escala 1-9.
+// Capacidad interna YA NO entra al puntaje (queda solo como dato informativo
+// en el payload). Complejidad se invierte: menos complejo = mejor puntaje.
+//   Ponderación = (0.40×Impacto + 0.35×Urgencia + 0.25×ComplejidadInvertida) × 4 − 3
+// con Alto=3, Medio=2, Bajo=1, y ComplejidadInvertida = 4 − nivel(Complejidad).
+// Si falta impacto, urgencia o complejidad, la iniciativa no participa en los
+// mapas de burbujas (no se puede calcular la fórmula).
 function ponderacionDe(it){
-  let suma = 0, count = 0;
-  CRITERIOS_PONDERACION.forEach(c => { const n = nivelNum(it[c]); if (n != null) { suma += n; count++; } });
-  return count ? suma : null;
+  const nImpacto = nivelNum(it.impacto);
+  const nUrgencia = nivelNum(it.urgencia);
+  const nComplejidad = nivelNum(it.complejidad);
+  if (nImpacto == null || nUrgencia == null || nComplejidad == null) return null;
+  const complejidadInvertida = 4 - nComplejidad;
+  const pond = (0.40 * nImpacto + 0.35 * nUrgencia + 0.25 * complejidadInvertida) * 4 - 3;
+  return Math.round(pond * 10) / 10;
 }
 
-const MAPA_NIVEL_Y = { Alto:0, Medio:1, Bajo:2 };
 const MAPA_VIEW_W = 340, MAPA_VIEW_H = 300;
-const MAPA_M = { left:52, right:14, top:30, bottom:42 };
+const MAPA_M = { left:66, right:14, top:22, bottom:46 };
 const MAPA_PLOT_W = MAPA_VIEW_W - MAPA_M.left - MAPA_M.right;
 const MAPA_PLOT_H = MAPA_VIEW_H - MAPA_M.top - MAPA_M.bottom;
 const MAPA_ROW_H = MAPA_PLOT_H / 3;
-const MAPA_MIN_R = 8, MAPA_MAX_R = 27, MAPA_ID_LEGIBLE_R = 15;
 const MAPA_CLUSTER_GAP_PCT = 6, MAPA_BUBBLE_GAP = 3, MAPA_EDGE_PAD = 6, MAPA_MIN_R_ESCALADO = 4;
-const MAPA_VERDE_ZONA = '#1E7A46';
 
-function radioDe(it, minPond, rangoPond){
-  const pond = it._ponderacion == null ? minPond : it._ponderacion;
-  const norm = (pond - minPond) / rangoPond;
-  return MAPA_MIN_R + norm * (MAPA_MAX_R - MAPA_MIN_R);
-}
-
-function textoContrasteMapa(pct){ return pct >= 50 ? '#fff' : '#052263'; }
-
-function posicionesPara(items, campo, minPond, rangoPond){
-  const porFila = { 0:[], 1:[], 2:[] };
-  items.forEach(it => {
-    const fila = MAPA_NIVEL_Y[it[campo]];
-    if (fila === undefined) return;
-    porFila[fila].push(it);
-  });
-  const puntos = [];
-  const availableSpan = MAPA_ROW_H - 2 * MAPA_EDGE_PAD;
-
-  Object.keys(porFila).forEach(filaKey => {
-    const fila = Number(filaKey);
-    const lista = porFila[fila].slice().sort((a, b) => a._pct - b._pct);
-    const rowCenterY = MAPA_M.top + (fila + 0.5) * MAPA_ROW_H;
-
-    // Agrupa en clusters las iniciativas con % de aprobación casi idéntico
-    // (empates o casi-empates): el eje X nunca se jitterea (representa el
-    // % real), la separación se resuelve siempre en el eje Y.
-    let i = 0;
-    while (i < lista.length) {
-      let j = i;
-      while (j + 1 < lista.length && (lista[j + 1]._pct - lista[j]._pct) < MAPA_CLUSTER_GAP_PCT) j++;
-      const cluster = lista.slice(i, j + 1);
-      const radiosBase = cluster.map(it => radioDe(it, minPond, rangoPond));
-
-      if (cluster.length === 1) {
-        puntos.push({
-          it: cluster[0], fila: fila,
-          cx: MAPA_M.left + (cluster[0]._pct / 100) * MAPA_PLOT_W,
-          cy: rowCenterY, r: radiosBase[0]
-        });
-      } else {
-        let totalExtent = radiosBase[0] + radiosBase[radiosBase.length - 1];
-        for (let k = 0; k < radiosBase.length - 1; k++) totalExtent += radiosBase[k] + radiosBase[k + 1] + MAPA_BUBBLE_GAP;
-
-        let scale = 1;
-        if (totalExtent > availableSpan) {
-          scale = availableSpan / totalExtent;
-          const pisoScale = MAPA_MIN_R_ESCALADO / Math.min.apply(null, radiosBase);
-          if (pisoScale > scale) scale = Math.min(1, pisoScale);
-        }
-        const radios = radiosBase.map(r => r * scale);
-
-        let totalExtentFinal = radios[0] + radios[radios.length - 1];
-        for (let k = 0; k < radios.length - 1; k++) totalExtentFinal += radios[k] + radios[k + 1] + MAPA_BUBBLE_GAP;
-
-        let cy = rowCenterY - totalExtentFinal / 2 + radios[0];
-        cluster.forEach((it, idx) => {
-          puntos.push({ it: it, fila: fila, cx: MAPA_M.left + (it._pct / 100) * MAPA_PLOT_W, cy: cy, r: radios[idx] });
-          if (idx < cluster.length - 1) cy += radios[idx] + MAPA_BUBBLE_GAP + radios[idx + 1];
-        });
-      }
-      i = j + 1;
-    }
-  });
-  return puntos;
-}
-
-function graficoSvg(items, campo, invertido, tituloEje, minPond, rangoPond){
-  const puntos = posicionesPara(items, campo, minPond, rangoPond);
-  const filaMejor = invertido ? 2 : 0;
-
-  let bubbles = '';
-  puntos.forEach(p => {
-    const enZona = p.fila === filaMejor && p.it._pct >= 50;
-    const fill = enZona ? MAPA_VERDE_ZONA : colorAzulPct(p.it._pct);
-    const textoFill = enZona ? '#fff' : textoContrasteMapa(p.it._pct);
-    bubbles += '<circle class="bubble" data-pct="' + p.it._pct + '" data-id="' + escapeHtml(p.it.id) + '" data-nombre="' + escapeHtml(p.it.nombre || '') + '" data-sintesis="' + escapeHtml(p.it.sintesis || '') + '" data-ponderacion="' + (p.it._ponderacion != null ? p.it._ponderacion : '') + '" cx="' + p.cx.toFixed(1) + '" cy="' + p.cy.toFixed(1) + '" r="' + p.r.toFixed(1) + '" fill="' + fill + '"></circle>';
-    if (p.r >= MAPA_ID_LEGIBLE_R) {
-      const fontSize = Math.max(7, p.r * 0.4).toFixed(1);
-      bubbles += '<text class="bubble-id-txt eje-txt" data-pct="' + p.it._pct + '" x="' + p.cx.toFixed(1) + '" y="' + p.cy.toFixed(1) + '" dy=".32em" text-anchor="middle" font-size="' + fontSize + '" style="pointer-events:none;fill:' + textoFill + '">' + escapeHtml(p.it.id) + '</text>';
-    }
-  });
-
-  const filas = ['Alto', 'Medio', 'Bajo'];
-  let filaLabels = '';
-  filas.forEach((lab, i) => {
-    filaLabels += '<text class="eje-txt" x="' + (MAPA_M.left - 8) + '" y="' + (MAPA_M.top + (i + 0.5) * MAPA_ROW_H + 3) + '" text-anchor="end">' + lab + '</text>';
-  });
-
-  let filaLineas = '';
-  for (let i = 1; i < 3; i++) {
-    filaLineas += '<line x1="' + MAPA_M.left + '" y1="' + (MAPA_M.top + i * MAPA_ROW_H) + '" x2="' + (MAPA_M.left + MAPA_PLOT_W) + '" y2="' + (MAPA_M.top + i * MAPA_ROW_H) + '" stroke="#E6EAF0" stroke-width="1"></line>';
-  }
-
-  const yMid = MAPA_M.top + MAPA_PLOT_H / 2;
-
-  return '' +
-    '<svg class="mapa-svg" viewBox="0 0 ' + MAPA_VIEW_W + ' ' + MAPA_VIEW_H + '" role="img" aria-label="Matriz de ' + tituloEje + ' contra porcentaje de aprobación">' +
-      '<rect x="' + MAPA_M.left + '" y="' + MAPA_M.top + '" width="' + MAPA_PLOT_W + '" height="' + MAPA_PLOT_H + '" fill="none" stroke="#E6EAF0"></rect>' +
-      filaLineas +
-      '<line class="divisor-x" x1="' + (MAPA_M.left + MAPA_PLOT_W * 0.5) + '" y1="' + MAPA_M.top + '" x2="' + (MAPA_M.left + MAPA_PLOT_W * 0.5) + '" y2="' + (MAPA_M.top + MAPA_PLOT_H) + '" stroke="#3769A8" stroke-width="1" stroke-dasharray="3,3"></line>' +
-      filaLabels +
-      '<text class="eje-titulo" x="14" y="' + yMid + '" text-anchor="middle" transform="rotate(-90 14 ' + yMid + ')">' + tituloEje.toUpperCase() + '</text>' +
-      '<text class="eje-txt" x="' + MAPA_M.left + '" y="' + (MAPA_M.top + MAPA_PLOT_H + 16) + '" text-anchor="middle">0%</text>' +
-      '<text class="eje-txt" x="' + (MAPA_M.left + MAPA_PLOT_W * 0.5) + '" y="' + (MAPA_M.top + MAPA_PLOT_H + 16) + '" text-anchor="middle">50%</text>' +
-      '<text class="eje-txt" x="' + (MAPA_M.left + MAPA_PLOT_W) + '" y="' + (MAPA_M.top + MAPA_PLOT_H + 16) + '" text-anchor="middle">100%</text>' +
-      '<text class="eje-titulo" x="' + (MAPA_M.left + MAPA_PLOT_W / 2) + '" y="' + (MAPA_VIEW_H - 6) + '" text-anchor="middle">% DE APROBACIÓN</text>' +
-      bubbles +
-    '</svg>';
-}
-
-function tarjetaDestacada(it, etiqueta){
-  if (!it) {
-    return '<div class="dest-card dest-vacia"><div class="dest-tag">' + escapeHtml(etiqueta) + '</div><div class="dest-nombre">Sin datos suficientes.</div></div>';
-  }
-  const sint = it.sintesis && it.sintesis.trim() ? it.sintesis : 'Sin síntesis registrada.';
-  return '' +
-    '<div class="dest-card">' +
-      '<div class="dest-tag">' + escapeHtml(etiqueta) + '</div>' +
-      '<div class="dest-id">' + escapeHtml(it.id) + '</div>' +
-      '<div class="dest-nombre">' + escapeHtml(it.nombre || '') + '</div>' +
-      '<div class="dest-sintesis">' + escapeHtml(sint) + '</div>' +
-    '</div>';
-}
+// NOTA: el dibujado de los mapas de burbujas ya NO vive aqui. Se mudo al
+// script del HTML de Resultados exportado, porque desde 2026-09-17 los mapas
+// solo muestran las iniciativas seleccionadas y tienen que redibujarse cada
+// vez que alguien marca o desmarca una casilla en el ranking. Esta pagina solo
+// serializa los datos (ITEMS) y las constantes de layout (MAPA) al reporte.
 
 function exportarResultados(){
   const susExport = porTipo('sus'), nuestrasExport = porTipo('nuestras'), nuevaExport = porTipo('nueva');
@@ -848,21 +738,29 @@ function exportarResultados(){
     return Object.assign({}, it, { _pct: pct, _tally: t, _ponderacion: ponderacionDe(it) });
   }).sort((a, b) => b._pct - a._pct);
 
-  const conPonderacion = todas.filter(it => it._ponderacion != null);
-  const minPond = conPonderacion.length ? Math.min.apply(null, conPonderacion.map(it => it._ponderacion)) : 0;
-  const maxPond = conPonderacion.length ? Math.max.apply(null, conPonderacion.map(it => it._ponderacion)) : 0;
-  const rangoPond = (maxPond - minPond) || 1;
-
-  const usados = new Set();
-  const ganadorAprobacion = elegirGanador(todas, it => it._pct, usados);
-  const ganadorUrgencia = elegirGanador(todas.filter(it => nivelNum(it.urgencia) != null), it => (it._pct / 100) + normNivel(it.urgencia), usados);
-  const ganadorImpacto = elegirGanador(todas.filter(it => nivelNum(it.impacto) != null), it => (it._pct / 100) + normNivel(it.impacto), usados);
-  const ganadorComplejidad = elegirGanador(todas.filter(it => nivelNum(it.complejidad) != null), it => (it._pct / 100) + (1 - normNivel(it.complejidad)), usados);
+  // Preseleccion del reporte: las 4 iniciativas con mayor % de aprobacion. Si
+  // hay empate en el porcentaje del cuarto puesto, entran todas las empatadas
+  // (por eso el filtro es >= el corte, no un slice de 4). Las de 0% nunca se
+  // preseleccionan: no tendria sentido proponer algo que nadie aprobo.
+  const TOP_SELECCION = 4;
+  const corteSeleccion = todas.length ? todas[Math.min(TOP_SELECCION, todas.length) - 1]._pct : 0;
+  const preseleccion = todas.filter(it => it._pct >= corteSeleccion && it._pct > 0).map(it => it.id);
 
   const filasRanking = todas.map(filaRanking).join('');
-  const svgUrgencia = graficoSvg(todas, 'urgencia', false, 'Urgencia', minPond, rangoPond);
-  const svgImpacto = graficoSvg(todas, 'impacto', false, 'Impacto', minPond, rangoPond);
-  const svgComplejidad = graficoSvg(todas, 'complejidad', true, 'Complejidad', minPond, rangoPond);
+
+  // Datos crudos que el reporte usa para dibujar (y redibujar) los mapas.
+  // Se mandan todas las iniciativas, no solo las preseleccionadas: el reporte
+  // filtra por la seleccion vigente en cada redibujado.
+  const itemsMapa = todas.map(it => ({
+    id: it.id,
+    nombre: it.nombre || '',
+    sintesis: it.sintesis || '',
+    pct: it._pct,
+    pond: it._ponderacion,
+    urgencia: it.urgencia || null,
+    impacto: it.impacto || null,
+    complejidad: it.complejidad || null,
+  }));
 
   let filas = '';
   todas.forEach((it, i) => {
@@ -894,51 +792,68 @@ function exportarResultados(){
 :root{--azul-900:#052263;--azul-700:#123B7A;--azul-500:#3769A8;--azul-200:#DCE8F5;--azul-050:#F3F7FB;--gris:#5F6A7B;--gris-200:#E6EAF0;--verde:#1E7A46}
 *{box-sizing:border-box}
 body{margin:0;font-family:Futura,"Futura PT","Century Gothic",Arial,sans-serif;background:#fff;color:var(--azul-900)}
-.page{max-width:1180px;margin:0 auto;padding:40px 40px 80px}
+.page{max-width:1180px;margin:0 auto;padding:40px 40px 80px;zoom:1.25}
 h1{font-size:46px;line-height:1.06;font-weight:500;color:var(--azul-900);margin:0 0 4px}
 .header-row{display:flex;align-items:center;gap:12px;margin-bottom:18px}
 .brand-sep{width:1px;height:18px;background:var(--gris-200)}
 .logo-img{height:24px;width:auto;display:block;object-fit:contain}
-.section-label{font-size:18px;font-weight:500;color:var(--azul-900);margin:30px 0 10px}
+.section-label{font-size:20px;font-weight:600;color:var(--azul-900);margin:34px 0 12px}
 .section-label.primero{margin-top:0}
-.section-sub{font-size:12px;color:var(--gris);max-width:760px;line-height:1.5;margin:-4px 0 14px}
-.kpi-grid{display:grid;grid-template-columns:repeat(2,minmax(0,240px));gap:14px}
+.section-sub{font-size:12px;color:var(--gris);line-height:1.5;margin:-4px 0 14px}
+.kpi-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
 .kpi-card{border:1px solid var(--gris-200);border-radius:6px;padding:14px 16px;background:#fff}
 .kpi-label{font-size:11px;color:var(--gris);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em}
 .kpi-value{font-size:22px;font-weight:500;color:var(--azul-900)}
-.guia-box{font-size:12.5px;color:var(--gris);line-height:1.6;max-width:760px;background:var(--azul-050);border-radius:6px;padding:12px 16px}
+.guia-box{font-size:13px;color:var(--gris);line-height:1.6;background:var(--azul-050);border-radius:6px;padding:14px 18px}
 .guia-box strong{color:var(--azul-900);font-weight:600}
-.umbral-control{display:flex;align-items:center;gap:12px;margin:16px 0 6px;padding:12px 16px;background:var(--azul-050);border-radius:6px;max-width:560px}
-.umbral-control input{flex:1;accent-color:var(--azul-900)}
-.umbral-control span{font-size:13px;font-weight:500;min-width:44px;text-align:right}
+.guia-box ul{margin:0;padding-left:17px}
+.guia-box li{margin-bottom:4px}
+.guia-box li:last-child{margin-bottom:0}
+.guia-objetivo{margin-top:11px;padding-top:11px;border-top:1px solid var(--azul-200);color:var(--azul-900);font-size:13.5px}
+.guia-objetivo strong{font-weight:700}
+.sel-bar{display:flex;align-items:center;gap:12px;margin:16px 0 6px;padding:11px 16px;background:var(--azul-050);border-radius:6px;font-size:12.5px;color:var(--gris)}
+.sel-bar strong{color:var(--azul-900);font-weight:600}
+.sel-bar .sep{flex:1}
+.sel-btn{font-family:inherit;font-size:12px;color:var(--azul-700);background:#fff;border:1px solid var(--azul-200);border-radius:4px;padding:6px 12px;cursor:pointer;transition:border-color .2s ease}
+.sel-btn:hover{border-color:var(--azul-500)}
 .bubble-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:32px}
-.bubble-titulo{font-size:12.5px;font-weight:500;color:var(--azul-900);margin-bottom:8px}
+.bubble-titulo{font-size:14px;font-weight:700;color:var(--azul-900);margin-bottom:10px}
 svg.mapa-svg{display:block;width:100%;height:auto}
 .bubble{cursor:pointer;transition:opacity .15s ease}
-.bubble.bajo-umbral{opacity:.18}
-.bubble-id-txt{font-weight:600;pointer-events:none;transition:opacity .15s ease}
-.bubble-id-txt.bajo-umbral{opacity:.18}
-.eje-txt{font-size:9.5px;fill:var(--gris)}
-.eje-titulo{font-size:10.5px;fill:var(--azul-700);font-weight:600;letter-spacing:.04em}
+.bubble-id-txt{font-size:8.5px;font-weight:600;fill:var(--azul-900);pointer-events:none}
+.mapa-nota{font-size:10.5px;color:var(--gris);margin-top:4px}
+.eje-txt{font-size:10.5px;fill:#5F6A7B}
+.eje-titulo{font-size:10.5px;fill:var(--azul-700);font-weight:700;letter-spacing:.08em}
 #bubbleTip{position:fixed;z-index:60;width:220px;background:#fff;color:var(--azul-900);font-size:12px;line-height:1.5;padding:10px 12px;border-radius:6px;box-shadow:0 8px 24px rgba(5,34,99,.2);border:1px solid var(--gris-200);pointer-events:none;opacity:0;transition:opacity .12s ease}
 #bubbleTip.visible{opacity:1}
 #bubbleTip .fila{display:flex;justify-content:space-between;gap:10px}
 #bubbleTip .lbl{color:var(--gris)}
 #bubbleTip .sintesis{color:var(--gris);margin-bottom:8px}
-.rk-list{max-width:760px}
-.rk-row{margin-bottom:11px}
-.rk-bar-wrap{height:9px;border-radius:4px;background:var(--gris-200);overflow:hidden;margin-bottom:4px}
-.rk-bar{height:100%;border-radius:4px;transition:opacity .15s}
-.rk-label{display:flex;justify-content:space-between;font-size:12.5px;transition:color .15s}
-.rk-nombre{color:var(--azul-900)}
-.rk-pct{font-variant-numeric:tabular-nums;color:var(--gris)}
-.rk-row.bajo-umbral .rk-nombre,.rk-row.bajo-umbral .rk-pct{color:#EDEDED}
-.rk-row.bajo-umbral .rk-bar{opacity:.15}
-.dest-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}
+.rk-list{width:100%}
+.rk-head{display:flex;align-items:center;gap:12px;padding-bottom:6px;margin-bottom:4px;border-bottom:1px solid var(--gris-200);font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--gris)}
+.rk-head-chk{flex:0 0 auto;width:15px}
+.rk-head-nombre{flex:1 1 auto}
+.rk-head-pond{flex:0 0 auto;width:52px;text-align:right}
+.rk-head-pct{flex:0 0 46%;margin-left:8px;text-align:right}
+.rk-row{display:flex;align-items:center;gap:12px;padding:6px 0}
+.rk-nombre{flex:1 1 auto;font-size:13.5px;line-height:1.35;color:var(--azul-900);transition:color .15s}
+.rk-id{display:inline-block;min-width:64px;color:var(--azul-500);font-weight:600;transition:color .15s}
+.rk-pond{flex:0 0 auto;width:52px;text-align:right;font-size:12.5px;font-weight:600;color:var(--azul-700);font-variant-numeric:tabular-nums;transition:color .15s}
+.rk-track{flex:0 0 46%;display:flex;align-items:center;justify-content:flex-end;gap:8px;position:relative;margin-left:8px}
+.rk-rail{position:absolute;right:0;top:50%;transform:translateY(-50%);width:calc(100% - 52px);height:14px;border-radius:3px;background:#F5F7FA}
+.rk-pct{position:relative;flex:0 0 auto;width:44px;text-align:right;font-size:12px;font-weight:600;color:var(--azul-700);font-variant-numeric:tabular-nums;transition:color .15s}
+.rk-bar{position:relative;flex:0 0 auto;height:14px;border-radius:3px;min-width:2px;transition:opacity .15s}
+.rk-check{flex:0 0 auto;width:15px;height:15px;margin:0;accent-color:var(--azul-900);cursor:pointer}
+.rk-row.no-sel .rk-nombre{color:#B9C0CB}
+.rk-row.no-sel .rk-id{color:#C3C9D3}
+.rk-row.no-sel .rk-pct{color:#C3C9D3}
+.rk-row.no-sel .rk-pond{color:#C3C9D3}
+.rk-row.no-sel .rk-bar{opacity:.28}
+.rk-row.no-sel .rk-rail{opacity:.5}
+.dest-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}
 .dest-card{border:1px solid var(--gris-200);border-radius:6px;padding:12px 14px;background:#fff}
-.dest-tag{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--azul-500);margin-bottom:6px}
-.dest-id{font-size:11px;color:var(--gris);margin-bottom:2px}
-.dest-nombre{font-size:13px;font-weight:500;color:var(--azul-900);margin-bottom:6px}
+.dest-id{font-size:11px;font-weight:600;color:var(--azul-500);margin-bottom:3px}
+.dest-nombre{font-size:13px;font-weight:600;color:var(--azul-900);margin-bottom:6px}
 .dest-sintesis{font-size:11.5px;color:var(--gris);line-height:1.4}
 .dest-vacia{color:var(--gris);font-size:12px}
 table{border-collapse:collapse;width:100%;font-size:13px}
@@ -966,35 +881,217 @@ ${logoEmpresaSrc ? '<img class="logo-img" src="' + logoEmpresaSrc + '" alt="' + 
 
 <div class="section-label">Guía de lectura</div>
 <div class="guia-box">
-El eje horizontal de cada mapa es el <strong>% de aprobación</strong> obtenido en la votación. El tamaño de cada burbuja representa la <strong>ponderación</strong> (suma de urgencia, impacto, complejidad y capacidad interna) y dentro se muestra el <strong>ID</strong> de la iniciativa. Usa el control de <strong>umbral</strong> para concentrarte en las iniciativas con mayor aprobación: las que queden por debajo se atenúan a la vez en el ranking y los mapas.
+<ul>
+<li>El eje horizontal de cada mapa es el <strong>% de aprobación</strong> obtenido en la votación y el vertical es el nivel del criterio.</li>
+<li>La columna <strong>Puntaje</strong> del ranking es la ponderación de priorización (escala 1-9: 40% impacto + 35% urgencia + 25% complejidad invertida).</li>
+</ul>
+<div class="guia-objetivo"><strong>Objetivo:</strong> seleccionar las <strong>${TOP_SELECCION} iniciativas</strong> con mayor beneficio para la empresa.</div>
 </div>
 
-<div class="umbral-control">
-<label for="umbral" style="font-size:12px;color:var(--gris)">Umbral de aprobación</label>
-<input type="range" id="umbral" min="0" max="100" step="1" value="50" oninput="aplicarUmbral(this.value)">
-<span id="umbral-val">50%</span>
+<div class="sel-bar">
+<span><strong id="sel-count">0</strong> de <strong>${todas.length}</strong> iniciativas seleccionadas</span>
+<span class="sep"></span>
+<button type="button" class="sel-btn" onclick="restablecerSeleccion()">Restablecer al Top ${TOP_SELECCION}</button>
 </div>
 
 <div class="section-label">Mapas de prioridad</div>
-<div class="section-sub">Cada mapa cruza el % de aprobación con un criterio de evaluación distinto. La esquina sombreada marca la zona más favorable para ese criterio.</div>
+<div class="section-sub">Cada mapa cruza el % de aprobación con un criterio de evaluación distinto, y solo dibuja las iniciativas seleccionadas en el ranking.</div>
 <div class="bubble-grid">
-<div><div class="bubble-titulo">Urgencia</div>${svgUrgencia}</div>
-<div><div class="bubble-titulo">Impacto de negocio</div>${svgImpacto}</div>
-<div><div class="bubble-titulo">Complejidad (menor es mejor)</div>${svgComplejidad}</div>
+<div><div class="bubble-titulo">Urgencia</div><div id="mapa-urgencia"></div></div>
+<div><div class="bubble-titulo">Impacto de negocio</div><div id="mapa-impacto"></div></div>
+<div><div class="bubble-titulo">Complejidad (menor es mejor)</div><div id="mapa-complejidad"></div></div>
 </div>
 <div id="bubbleTip" role="tooltip"></div>
 
 <div class="section-label">Ranking completo por % de aprobación</div>
-<div class="rk-list">${filasRanking}</div>
+<div class="rk-list">
+<div class="rk-head"><span class="rk-head-chk"></span><span class="rk-head-nombre">Iniciativa</span><span class="rk-head-pond">Puntaje</span><span class="rk-head-pct">% de aprobación</span></div>
+${filasRanking}</div>
 
-<div class="section-label">Ideas destacadas</div>
-<div class="dest-grid">${tarjetaDestacada(ganadorAprobacion, 'Mayor aprobación')}${tarjetaDestacada(ganadorUrgencia, 'Mayor urgencia')}${tarjetaDestacada(ganadorImpacto, 'Mayor impacto')}${tarjetaDestacada(ganadorComplejidad, 'Menor complejidad')}</div>
+<div class="section-label">Ideas priorizadas</div>
+<div class="dest-grid" id="ideas-priorizadas"></div>
 
 <div class="section-label">Detalle completo</div>
 <table><thead><tr><th>#</th><th>ID</th><th>Nombre</th><th>Área</th><th>% Aprobación</th><th>Aprobaciones</th><th>Vetos</th><th>Sin decidir</th><th>Total participantes</th></tr></thead><tbody>${filas}</tbody></table>
 </div>
 <script>
-var MAPA_M_LEFT = ${MAPA_M.left}, MAPA_PLOT_W = ${MAPA_PLOT_W};
+var PRESELECCION = ${JSON.stringify(preseleccion)};
+var SELECCION = new Set(PRESELECCION);
+var ITEMS = ${JSON.stringify(itemsMapa)};
+var MAPA = {
+  viewW: ${MAPA_VIEW_W}, viewH: ${MAPA_VIEW_H},
+  left: ${MAPA_M.left}, top: ${MAPA_M.top},
+  plotW: ${MAPA_PLOT_W}, plotH: ${MAPA_PLOT_H}, rowH: ${MAPA_ROW_H},
+  radio: 9,
+  clusterGapPct: ${MAPA_CLUSTER_GAP_PCT}, bubbleGap: ${MAPA_BUBBLE_GAP},
+  edgePad: ${MAPA_EDGE_PAD}, minREscalado: ${MAPA_MIN_R_ESCALADO}
+};
+var NIVEL_Y = { Alto: 0, Medio: 1, Bajo: 2 };
+
+function escHtml(s){
+  return (s == null ? "" : String(s))
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+// Color por % de aprobacion: 5 tramos discretos de un mismo tono azul, en vez
+// del degradado continuo anterior. Tramos (no degradado) para que dos barras o
+// dos burbujas se distingan a simple vista. La misma escala se usa en las
+// barras del ranking y en las burbujas de los mapas, para que un mismo % se
+// vea del mismo color en las dos secciones.
+//   0-19  #94B5D9 | 20-39 #6693C4 | 40-59 #3E6DA6 | 60-79 #1E4C85 | 80-100 #052263
+var ESCALA_APROBACION = ["#94B5D9", "#6693C4", "#3E6DA6", "#1E4C85", "#052263"];
+function colorAprobacion(pct){
+  var p = Math.max(0, Math.min(100, Number(pct) || 0));
+  var i = Math.min(4, Math.floor(p / 20));
+  return ESCALA_APROBACION[i];
+}
+// Todas las burbujas tienen el mismo diametro: el tamano ya no codifica la
+// ponderacion (ese dato ahora se lee como "Puntaje" en el ranking). El radio
+// solo se reduce si un grupo de burbujas no cabe apilado en su banda.
+function radioDe(){ return MAPA.radio; }
+
+function posicionesPara(items, campo){
+  var porFila = { 0: [], 1: [], 2: [] };
+  items.forEach(function(it){
+    var fila = NIVEL_Y[it[campo]];
+    if (fila === undefined) return;
+    porFila[fila].push(it);
+  });
+  var puntos = [];
+  var availableSpan = MAPA.rowH - 2 * MAPA.edgePad;
+  Object.keys(porFila).forEach(function(filaKey){
+    var fila = Number(filaKey);
+    var lista = porFila[fila].slice().sort(function(a, b){ return a.pct - b.pct; });
+    var rowCenterY = MAPA.top + (fila + 0.5) * MAPA.rowH;
+    var i = 0;
+    while (i < lista.length) {
+      var j = i;
+      while (j + 1 < lista.length && (lista[j+1].pct - lista[j].pct) < MAPA.clusterGapPct) j++;
+      var cluster = lista.slice(i, j + 1);
+      var radiosBase = cluster.map(radioDe);
+      if (cluster.length === 1) {
+        puntos.push({ it: cluster[0], fila: fila, cx: MAPA.left + (cluster[0].pct/100)*MAPA.plotW, cy: rowCenterY, r: radiosBase[0] });
+      } else {
+        var totalExtent = radiosBase[0] + radiosBase[radiosBase.length-1];
+        for (var k = 0; k < radiosBase.length - 1; k++) totalExtent += radiosBase[k] + radiosBase[k+1] + MAPA.bubbleGap;
+        var scale = 1;
+        if (totalExtent > availableSpan) {
+          scale = availableSpan / totalExtent;
+          var pisoScale = MAPA.minREscalado / Math.min.apply(null, radiosBase);
+          if (pisoScale > scale) scale = Math.min(1, pisoScale);
+        }
+        var radios = radiosBase.map(function(r){ return r * scale; });
+        var extentFinal = radios[0] + radios[radios.length-1];
+        for (var k2 = 0; k2 < radios.length - 1; k2++) extentFinal += radios[k2] + radios[k2+1] + MAPA.bubbleGap;
+        var cy = rowCenterY - extentFinal/2 + radios[0];
+        cluster.forEach(function(it, idx){
+          puntos.push({ it: it, fila: fila, cx: MAPA.left + (it.pct/100)*MAPA.plotW, cy: cy, r: radios[idx] });
+          if (idx < cluster.length - 1) cy += radios[idx] + MAPA.bubbleGap + radios[idx+1];
+        });
+      }
+      i = j + 1;
+    }
+  });
+  return puntos;
+}
+
+function dibujarMapa(items, campo, invertido, tituloEje){
+  var puntos = posicionesPara(items, campo);
+
+  // El ID va FUERA de la burbuja: con diametro uniforme y pequeno no cabe
+  // dentro de forma legible. Decidir el lado mirando solo el borde del grafico
+  // no alcanza: dos burbujas en la misma linea pueden terminar con sus
+  // etiquetas una encima de la otra (una tirada a la derecha y la vecina a la
+  // izquierda). Por eso el lado se resuelve por linea horizontal (mismo cy),
+  // recorriendo de derecha a izquierda: cada etiqueta va a la derecha salvo
+  // que choque con el borde o con lo que ya ocupa su vecina de la derecha.
+  var ANCHO_CHAR = 5.6, SEP = 4, LIMITE_DER = MAPA.left + MAPA.plotW + 12;
+  function anchoEtiqueta(p){ return String(p.it.id).length * ANCHO_CHAR; }
+  var porLinea = {};
+  puntos.forEach(function(p){
+    var k = p.cy.toFixed(1);
+    (porLinea[k] = porLinea[k] || []).push(p);
+  });
+  Object.keys(porLinea).forEach(function(k){
+    var linea = porLinea[k].sort(function(a, b){ return a.cx - b.cx; });
+    for (var i = linea.length - 1; i >= 0; i--) {
+      var p = linea[i];
+      var tope = LIMITE_DER;
+      if (i < linea.length - 1) {
+        var sig = linea[i + 1];
+        var ocupaSig = sig.cx - sig.r - (sig.ladoIzq ? anchoEtiqueta(sig) + SEP : 0);
+        if (ocupaSig - 3 < tope) tope = ocupaSig - 3;
+      }
+      p.ladoIzq = (p.cx + p.r + SEP + anchoEtiqueta(p)) > tope;
+      // si tirarla a la izquierda la saca del lienzo, se queda a la derecha
+      if (p.ladoIzq && (p.cx - p.r - SEP - anchoEtiqueta(p)) < 2) p.ladoIzq = false;
+    }
+  });
+
+  var bubbles = "";
+  puntos.forEach(function(p){
+    var fill = colorAprobacion(p.it.pct);
+    bubbles += '<circle class="bubble" data-pct="' + p.it.pct + '" data-id="' + escHtml(p.it.id) + '" data-nombre="' + escHtml(p.it.nombre) + '" data-sintesis="' + escHtml(p.it.sintesis) + '" data-ponderacion="' + (p.it.pond != null ? p.it.pond : "") + '" cx="' + p.cx.toFixed(1) + '" cy="' + p.cy.toFixed(1) + '" r="' + p.r.toFixed(1) + '" fill="' + fill + '"></circle>';
+    var lx = p.ladoIzq ? (p.cx - p.r - SEP) : (p.cx + p.r + SEP);
+    bubbles += '<text class="bubble-id-txt" x="' + lx.toFixed(1) + '" y="' + p.cy.toFixed(1) + '" dy=".32em" text-anchor="' + (p.ladoIzq ? "end" : "start") + '">' + escHtml(p.it.id) + '</text>';
+  });
+  var filaLabels = "";
+  ["Alto", "Medio", "Bajo"].forEach(function(lab, i){
+    filaLabels += '<text class="eje-txt" x="' + (MAPA.left - 10) + '" y="' + (MAPA.top + (i + 0.5) * MAPA.rowH + 3.5) + '" text-anchor="end">' + lab + '</text>';
+  });
+  var filaLineas = "";
+  for (var i2 = 1; i2 < 3; i2++) {
+    filaLineas += '<line x1="' + MAPA.left + '" y1="' + (MAPA.top + i2 * MAPA.rowH) + '" x2="' + (MAPA.left + MAPA.plotW) + '" y2="' + (MAPA.top + i2 * MAPA.rowH) + '" stroke="#E6EAF0" stroke-width="1"></line>';
+  }
+  var yMid = MAPA.top + MAPA.plotH / 2;
+  return '<svg class="mapa-svg" viewBox="0 0 ' + MAPA.viewW + ' ' + MAPA.viewH + '" role="img" aria-label="Matriz de ' + tituloEje + ' contra porcentaje de aprobación">' +
+    '<rect x="' + MAPA.left + '" y="' + MAPA.top + '" width="' + MAPA.plotW + '" height="' + MAPA.plotH + '" fill="none" stroke="#E6EAF0"></rect>' +
+    filaLineas +
+    '<line x1="' + (MAPA.left + MAPA.plotW * 0.5) + '" y1="' + MAPA.top + '" x2="' + (MAPA.left + MAPA.plotW * 0.5) + '" y2="' + (MAPA.top + MAPA.plotH) + '" stroke="#E6EAF0" stroke-width="1"></line>' +
+    filaLabels +
+    '<text class="eje-titulo" x="12" y="' + yMid + '" text-anchor="middle" transform="rotate(-90 12 ' + yMid + ')">' + tituloEje.toUpperCase() + '</text>' +
+    '<text class="eje-txt" x="' + MAPA.left + '" y="' + (MAPA.top + MAPA.plotH + 19) + '" text-anchor="middle">0%</text>' +
+    '<text class="eje-txt" x="' + (MAPA.left + MAPA.plotW * 0.5) + '" y="' + (MAPA.top + MAPA.plotH + 19) + '" text-anchor="middle">50%</text>' +
+    '<text class="eje-txt" x="' + (MAPA.left + MAPA.plotW) + '" y="' + (MAPA.top + MAPA.plotH + 19) + '" text-anchor="middle">100%</text>' +
+    '<text class="eje-titulo" x="' + (MAPA.left + MAPA.plotW / 2) + '" y="' + (MAPA.viewH - 8) + '" text-anchor="middle">% DE APROBACIÓN</text>' +
+    bubbles +
+    '</svg>';
+}
+
+// Una iniciativa seleccionada sin el criterio cargado no se puede ubicar en
+// el eje vertical, asi que no se dibuja. En vez de desaparecer en silencio
+// (y que en la reunion nadie entienda por que falta), se avisa bajo el mapa.
+function notaSinDato(sel, campo, etiqueta){
+  var faltan = sel.filter(function(it){ return NIVEL_Y[it[campo]] === undefined; }).length;
+  if (!faltan) return "";
+  return '<div class="mapa-nota">' + faltan + (faltan === 1 ? " seleccionada sin dato de " : " seleccionadas sin dato de ") + etiqueta + "</div>";
+}
+// Las tarjetas son exactamente las iniciativas seleccionadas, en el orden del
+// ranking, y se rehacen en cada cambio de seleccion (no son ya los "ganadores"
+// por criterio, que eran fijos y se calculaban al exportar).
+function redibujarIdeas(){
+  var sel = ITEMS.filter(function(it){ return SELECCION.has(it.id); });
+  var cont = document.getElementById("ideas-priorizadas");
+  if (!sel.length) {
+    cont.innerHTML = '<div class="dest-card dest-vacia">Ninguna iniciativa seleccionada.</div>';
+    return;
+  }
+  cont.innerHTML = sel.map(function(it){
+    var sint = it.sintesis && it.sintesis.trim() ? it.sintesis : "Sin síntesis registrada.";
+    return '<div class="dest-card">' +
+      '<div class="dest-id">' + escHtml(it.id) + '</div>' +
+      '<div class="dest-nombre">' + escHtml(it.nombre) + '</div>' +
+      '<div class="dest-sintesis">' + escHtml(sint) + '</div>' +
+      '</div>';
+  }).join("");
+}
+function redibujarMapas(){
+  var sel = ITEMS.filter(function(it){ return SELECCION.has(it.id); });
+  pinnedEl = null;
+  ocultarTip();
+  document.getElementById("mapa-urgencia").innerHTML = dibujarMapa(sel, "urgencia", false, "Urgencia") + notaSinDato(sel, "urgencia", "urgencia");
+  document.getElementById("mapa-impacto").innerHTML = dibujarMapa(sel, "impacto", false, "Impacto") + notaSinDato(sel, "impacto", "impacto");
+  document.getElementById("mapa-complejidad").innerHTML = dibujarMapa(sel, "complejidad", true, "Complejidad") + notaSinDato(sel, "complejidad", "complejidad");
+}
 var pinnedEl = null;
 function contenidoTipEl(el, completo){
   var nombre = el.getAttribute("data-nombre") || "";
@@ -1033,28 +1130,39 @@ function reposicionarPin(){
 }
 window.addEventListener("scroll", reposicionarPin, { passive: true, capture: true });
 window.addEventListener("resize", reposicionarPin);
-var bubbles = document.querySelectorAll(".bubble");
-for (var i = 0; i < bubbles.length; i++) {
-  (function(el){
-    el.addEventListener("mouseenter", function(e){ if (!pinnedEl) mostrarTip(el, false, e); });
-    el.addEventListener("mousemove", function(e){ if (!pinnedEl || pinnedEl === el) posicionarTip(e); });
-    el.addEventListener("mouseleave", function(){ if (!pinnedEl) ocultarTip(); });
-    el.addEventListener("click", function(e){ e.stopPropagation(); pinnedEl = el; mostrarTip(el, true, e); });
-  })(bubbles[i]);
-}
+// Delegacion en el contenedor: las burbujas se recrean en cada redibujado,
+// asi que no sirve engancharles listeners una sola vez al cargar.
+var gridMapas = document.querySelector(".bubble-grid");
+function burbujaDe(e){ return e.target && e.target.closest ? e.target.closest(".bubble") : null; }
+gridMapas.addEventListener("mouseover", function(e){ var el = burbujaDe(e); if (el && !pinnedEl) mostrarTip(el, false, e); });
+gridMapas.addEventListener("mousemove", function(e){ var el = burbujaDe(e); if (el && (!pinnedEl || pinnedEl === el)) posicionarTip(e); });
+gridMapas.addEventListener("mouseout", function(e){ var el = burbujaDe(e); if (el && !pinnedEl) ocultarTip(); });
+gridMapas.addEventListener("click", function(e){ var el = burbujaDe(e); if (el) { e.stopPropagation(); pinnedEl = el; mostrarTip(el, true, e); } });
 document.addEventListener("click", function(){ if (pinnedEl) { pinnedEl = null; ocultarTip(); } });
-function aplicarUmbral(v){
-  document.querySelectorAll(".bubble, .bubble-id-txt, .rk-row").forEach(function(el){
-    var p = Number(el.getAttribute("data-pct"));
-    el.classList.toggle("bajo-umbral", p < v);
+function aplicarSeleccion(){
+  document.querySelectorAll(".rk-row").forEach(function(row){
+    var sel = SELECCION.has(row.getAttribute("data-id"));
+    row.classList.toggle("no-sel", !sel);
+    var chk = row.querySelector(".rk-check");
+    if (chk) chk.checked = sel;
   });
-  document.querySelectorAll(".divisor-x").forEach(function(el){
-    var x = MAPA_M_LEFT + (v / 100) * MAPA_PLOT_W;
-    el.setAttribute("x1", x); el.setAttribute("x2", x);
-  });
-  document.getElementById("umbral-val").textContent = v + "%";
+  redibujarMapas();
+  redibujarIdeas();
+  document.getElementById("sel-count").textContent = SELECCION.size;
 }
-aplicarUmbral(50);
+function alternarSeleccion(chk){
+  var fila = chk.parentNode;
+  while (fila && !fila.classList.contains("rk-row")) fila = fila.parentNode;
+  if (!fila) return;
+  var id = fila.getAttribute("data-id");
+  if (chk.checked) SELECCION.add(id); else SELECCION.delete(id);
+  aplicarSeleccion();
+}
+function restablecerSeleccion(){
+  SELECCION = new Set(PRESELECCION);
+  aplicarSeleccion();
+}
+aplicarSeleccion();
 <\/script>
 </body></html>`;
 

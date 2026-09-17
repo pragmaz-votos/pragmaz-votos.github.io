@@ -817,6 +817,9 @@ h1{font-size:46px;line-height:1.06;font-weight:500;color:var(--azul-900);margin:
 .sel-bar .sep{flex:1}
 .sel-btn{font-family:inherit;font-size:12px;color:var(--azul-700);background:#fff;border:1px solid var(--azul-200);border-radius:4px;padding:6px 12px;cursor:pointer;transition:border-color .2s ease}
 .sel-btn:hover{border-color:var(--azul-500)}
+.sel-btn-primario{background:var(--azul-900);border-color:var(--azul-900);color:#fff}
+.sel-btn-primario:hover{background:var(--azul-700);border-color:var(--azul-700)}
+.sel-guardado{color:var(--azul-700);font-weight:600}
 .bubble-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:32px}
 .bubble-titulo{font-size:14px;font-weight:700;color:var(--azul-900);margin-bottom:10px}
 svg.mapa-svg{display:block;width:100%;height:auto}
@@ -891,8 +894,10 @@ ${logoEmpresaSrc ? '<img class="logo-img" src="' + logoEmpresaSrc + '" alt="' + 
 
 <div class="sel-bar">
 <span><strong id="sel-count">0</strong> de <strong>${todas.length}</strong> iniciativas seleccionadas</span>
+<span id="sel-guardado" class="sel-guardado"></span>
 <span class="sep"></span>
-<button type="button" class="sel-btn" onclick="restablecerSeleccion()">Restablecer al Top ${TOP_SELECCION}</button>
+<button type="button" class="sel-btn" id="btn-restablecer" data-label="Restablecer al Top ${TOP_SELECCION}" onclick="restablecerSeleccion()">Restablecer al Top ${TOP_SELECCION}</button>
+<button type="button" class="sel-btn sel-btn-primario" onclick="guardarSeleccion()">Guardar selección (archivo nuevo)</button>
 </div>
 
 <div class="section-label">Mapas de prioridad</div>
@@ -917,6 +922,8 @@ ${filasRanking}</div>
 </div>
 <script>
 var PRESELECCION = ${JSON.stringify(preseleccion)};
+var GUARDADO_EN = "";
+var ARCHIVO_BASE = "resultados-nicaragua-sugar-estates";
 var SELECCION = new Set(PRESELECCION);
 var ITEMS = ${JSON.stringify(itemsMapa)};
 var MAPA = {
@@ -1163,6 +1170,76 @@ function restablecerSeleccion(){
   SELECCION = new Set(PRESELECCION);
   aplicarSeleccion();
 }
+
+// Guardar la seleccion acordada en la sesion.
+// Un archivo abierto con file:// no puede reescribirse a si mismo (el navegador
+// lo prohibe), asi que esto no modifica el archivo actual: clona el documento,
+// deja la seleccion de ahora grabada como preseleccion de arranque y descarga
+// eso como un archivo NUEVO, fechado. La copia sigue siendo interactiva.
+function dosDig(n){ return (n < 10 ? "0" : "") + n; }
+function seleccionEnOrden(){
+  // en el orden del ranking, no en el orden en que se fueron marcando
+  return ITEMS.filter(function(it){ return SELECCION.has(it.id); })
+              .map(function(it){ return it.id; });
+}
+function guardarSeleccion(){
+  var clon = document.documentElement.cloneNode(true);
+
+  // Los mapas y las tarjetas los dibuja el script al abrir: se vacian en la
+  // copia para que el archivo no crezca en cada guardado.
+  ["mapa-urgencia", "mapa-impacto", "mapa-complejidad", "ideas-priorizadas"].forEach(function(id){
+    var el = clon.querySelector("#" + id);
+    if (el) el.innerHTML = "";
+  });
+  var tip = clon.querySelector("#bubbleTip");
+  if (tip) { tip.className = ""; tip.removeAttribute("style"); tip.innerHTML = ""; }
+  // Textos que el script escribe al abrir: se devuelven a su valor de plantilla
+  // para que guardar dos veces no vaya agrandando el archivo.
+  var contadorClon = clon.querySelector("#sel-count");
+  if (contadorClon) contadorClon.textContent = "0";
+  var avisoClon = clon.querySelector("#sel-guardado");
+  if (avisoClon) avisoClon.textContent = "";
+  var btnClon = clon.querySelector("#btn-restablecer");
+  if (btnClon && btnClon.getAttribute("data-label")) btnClon.textContent = btnClon.getAttribute("data-label");
+  // el estado de las filas tambien se recalcula al abrir
+  Array.prototype.forEach.call(clon.querySelectorAll(".rk-row"), function(r){ r.classList.remove("no-sel"); });
+  Array.prototype.forEach.call(clon.querySelectorAll(".rk-check"), function(c){ c.removeAttribute("checked"); });
+
+  var ahora = new Date();
+  var fechaArchivo = ahora.getFullYear() + "-" + dosDig(ahora.getMonth() + 1) + "-" + dosDig(ahora.getDate());
+  var fechaTexto = dosDig(ahora.getDate()) + "/" + dosDig(ahora.getMonth() + 1) + "/" + ahora.getFullYear();
+
+  var bloque = null;
+  Array.prototype.forEach.call(clon.querySelectorAll("script"), function(s){
+    if (s.textContent.indexOf("var PRESELECCION") !== -1) bloque = s;
+  });
+  if (!bloque) { alert("No se pudo guardar: no se encontró el bloque de datos del reporte."); return; }
+
+  var nuevaPresel = JSON.stringify(seleccionEnOrden());
+  bloque.textContent = bloque.textContent
+    .replace(/var PRESELECCION = \\[[^\\]]*\\];/, function(){ return "var PRESELECCION = " + nuevaPresel + ";"; })
+    .replace(/var GUARDADO_EN = "[^"]*";/, function(){ return "var GUARDADO_EN = " + JSON.stringify(fechaTexto) + ";"; });
+
+  var enlace = document.createElement("a");
+  var url = URL.createObjectURL(new Blob(["<!doctype html>\\n" + clon.outerHTML], { type: "text/html;charset=utf-8" }));
+  enlace.href = url;
+  enlace.download = ARCHIVO_BASE + "-seleccion-" + fechaArchivo + ".html";
+  document.body.appendChild(enlace);
+  enlace.click();
+  document.body.removeChild(enlace);
+  setTimeout(function(){ URL.revokeObjectURL(url); }, 4000);
+}
+
+// Si este archivo ES una copia guardada, se avisa y el boton de restablecer
+// pasa a devolver la seleccion guardada (que es la preseleccion de esta copia),
+// no el Top original.
+if (GUARDADO_EN) {
+  var avisoGuardado = document.getElementById("sel-guardado");
+  if (avisoGuardado) avisoGuardado.textContent = "· selección guardada el " + GUARDADO_EN;
+  var btnRestablecer = document.getElementById("btn-restablecer");
+  if (btnRestablecer) btnRestablecer.textContent = "Restablecer a la selección guardada";
+}
+
 aplicarSeleccion();
 <\/script>
 </body></html>`;
